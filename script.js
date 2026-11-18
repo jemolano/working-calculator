@@ -2,6 +2,15 @@ const display = document.getElementById("display");
 const buttons = document.querySelectorAll("button");
 const MAX_EXPRESSION_LENGTH = 256;
 const MAX_TOKEN_COUNT = 128;
+const MAX_PARENTHESIS_DEPTH = 32;
+
+if (!display) {
+    console.error('No se encontró el elemento "display".');
+}
+
+if (buttons.length === 0) {
+    console.warn("No se encontraron botones para la calculadora.");
+}
 
 function tokenize(expression) {
     if (expression.length > MAX_EXPRESSION_LENGTH) {
@@ -10,6 +19,7 @@ function tokenize(expression) {
 
     const tokens = [];
     let index = 0;
+    let parenthesisDepth = 0;
 
     while (index < expression.length) {
         const character = expression[index];
@@ -41,6 +51,15 @@ function tokenize(expression) {
 
             tokens.push({ type: "number", value });
         } else if ("+-*/%()".includes(character)) {
+            if (character === "(") {
+                parenthesisDepth++;
+                if (parenthesisDepth > MAX_PARENTHESIS_DEPTH) {
+                    throw new Error("Hay demasiados paréntesis anidados");
+                }
+            } else if (character === ")" && parenthesisDepth > 0) {
+                parenthesisDepth--;
+            }
+
             tokens.push({ type: character, value: character });
             index++;
         } else {
@@ -91,26 +110,29 @@ function calculateExpression(expression) {
     }
 
     function parseUnary() {
-        if (tokens[position]?.type === "+") {
+        let negative = false;
+
+        while (tokens[position]?.type === "+" || tokens[position]?.type === "-") {
+            if (tokens[position].type === "-") {
+                negative = !negative;
+            }
             position++;
-            return parseUnary();
         }
 
-        if (tokens[position]?.type === "-") {
-            position++;
-            return -parseUnary();
-        }
-
-        return parsePostfix();
+        const value = parsePostfix();
+        return negative ? -value : value;
     }
 
     function parsePostfix() {
         let value = parsePrimary();
 
         // El porcentaje es postfix: 50% = 0.5 y 200 * 10% = 20.
-        while (tokens[position]?.type === "%") {
+        if (tokens[position]?.type === "%") {
             position++;
             value /= 100;
+            if (tokens[position]?.type === "%") {
+                throw new Error("No se permiten porcentajes consecutivos");
+            }
         }
 
         return value;
@@ -159,20 +181,62 @@ function calculateExpression(expression) {
     }
     ensureFinite(result);
 
-    // Number(...).toString() conserva los ceros de los enteros (100 sigue siendo 100).
-    const roundedResult = Number(result.toFixed(10));
+    // Conserva números pequeños y evita mostrar artefactos de precisión binaria.
+    const roundedResult = Number(result.toPrecision(12));
     return String(Object.is(roundedResult, -0) ? 0 : roundedResult);
 }
 
 function appendToDisplay(value) {
-    if (display.value.length + value.length > MAX_EXPRESSION_LENGTH) {
+    if (!display || display.value.length + value.length > MAX_EXPRESSION_LENGTH) {
         return;
     }
     display.value += value;
 }
 
+function appendOperator(operator) {
+    if (!display) {
+        return;
+    }
+
+    const expression = display.value;
+
+    if (expression === "0" && operator === "-") {
+        display.value = "-";
+        return;
+    }
+
+    const trailingOperators = expression.match(/[+*/-]+$/)?.[0];
+    if (!trailingOperators) {
+        appendToDisplay(operator);
+        return;
+    }
+
+    if (operator === "-") {
+        // Permitir un signo unario después de un operador binario.
+        if (/[+*/]$/.test(expression)) {
+            appendToDisplay(operator);
+        }
+        return;
+    }
+
+    const prefix = expression.slice(0, -trailingOperators.length);
+    if (!prefix) {
+        return;
+    }
+
+    // Si la cola termina en un signo unario, reemplazar también su operador anterior.
+    const normalizedPrefix = /[+*/]-$/.test(trailingOperators)
+        ? expression.slice(0, -(trailingOperators.length))
+        : prefix;
+    display.value = `${normalizedPrefix}${operator}`;
+}
+
 buttons.forEach((button) => {
     button.addEventListener("click", () => {
+        if (!display) {
+            return;
+        }
+
         const value = button.innerText.trim();
 
         if (value === "AC") {
@@ -212,29 +276,14 @@ buttons.forEach((button) => {
         }
 
         if (value === "%") {
-            if (/[0-9)%]$/.test(display.value)) {
+            if (/[0-9)]$/.test(display.value)) {
                 appendToDisplay(value);
             }
             return;
         }
 
         if (["+", "-", "*", "/"].includes(value)) {
-            if (display.value === "0" && value === "-") {
-                display.value = "-";
-                return;
-            }
-
-            if (/[+*/-]$/.test(display.value)) {
-                // Permite signo unario en expresiones como 3 * -2 o 3 - -2.
-                if (value === "-" && !display.value.endsWith("-")) {
-                    appendToDisplay(value);
-                } else if (value !== "-") {
-                    display.value = display.value.slice(0, -1) + value;
-                }
-                return;
-            }
-
-            appendToDisplay(value);
+            appendOperator(value);
             return;
         }
 
